@@ -1,0 +1,402 @@
+{
+  "name": "W-04: WhatsApp Integration",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "w04-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL || 'https://waba.360dialog.io/v1' }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.phone, type: 'template', template: { name: 'welcome_lead', language: { code: 'en' }, components: [{ type: 'body', parameters: [{ type: 'text', text: $json.firstname || 'there' }] }] } }) }}",
+        "options": {}
+      },
+      "id": "w04-send-welcome",
+      "name": "Send Welcome WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp-api",
+          "name": "WhatsApp API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const contact = $input.item.json;\nreturn {\n  json: {\n    contactId: contact.contactId || contact.id,\n    phone: contact.phone,\n    firstname: contact.firstname,\n    template: 'welcome_lead',\n    sent_at: new Date().toISOString(),\n    status: 'sent'\n  }\n};"
+      },
+      "id": "w04-log-outbound",
+      "name": "Log Outbound Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-inbound",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "w04-inbound-webhook",
+      "name": "Webhook - WhatsApp Inbound",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 600],
+      "webhookId": "whatsapp-inbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\n\n// Parse inbound WhatsApp message (360dialog / Twilio format)\nlet senderPhone, messageBody, senderName, messageId;\n\nif (body.entry) {\n  // Meta / 360dialog webhook format\n  const entry = body.entry[0];\n  const changes = entry.changes[0];\n  const message = changes.value.messages ? changes.value.messages[0] : null;\n  const contact = changes.value.contacts ? changes.value.contacts[0] : null;\n\n  if (!message) {\n    // Status update, not a message\n    return { json: { skip: true, reason: 'status_update' } };\n  }\n\n  senderPhone = message.from;\n  messageBody = message.text ? message.text.body : '[media]';\n  senderName = contact ? contact.profile.name : 'Unknown';\n  messageId = message.id;\n} else if (body.From) {\n  // Twilio format\n  senderPhone = body.From.replace('whatsapp:', '');\n  messageBody = body.Body || '';\n  senderName = body.ProfileName || 'Unknown';\n  messageId = body.MessageSid;\n}\n\nreturn {\n  json: {\n    senderPhone: senderPhone,\n    messageBody: messageBody,\n    senderName: senderName,\n    messageId: messageId,\n    received_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "w04-parse-inbound",
+      "name": "Parse Inbound Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "not-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEqual"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w04-skip-check",
+      "name": "Is Real Message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filterGroups: [{ filters: [{ propertyName: 'phone', operator: 'CONTAINS_TOKEN', value: $json.senderPhone.slice(-10) }] }], properties: ['email', 'firstname', 'lastname', 'phone', 'behavior_tags', 'lead_score', 'lifecycle_stage'], limit: 1 }) }}",
+        "options": {}
+      },
+      "id": "w04-find-contact",
+      "name": "Find Contact by Phone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 550],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "contact-found",
+              "leftValue": "={{ $json.total }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w04-contact-found",
+      "name": "Contact Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1130, 550]
+    },
+    {
+      "parameters": {
+        "jsCode": "const searchResult = $('Find Contact by Phone').item.json;\nconst inbound = $('Parse Inbound Message').item.json;\nconst contact = searchResult.results[0];\n\n// Update behavior_tags to include 'replied'\nlet existingTags = contact.properties.behavior_tags || '';\nlet tagsArray = existingTags.split(';').map(t => t.trim()).filter(Boolean);\nif (!tagsArray.includes('replied')) {\n  tagsArray.push('replied');\n}\n// Remove 'inactive' if present since they replied\ntagsArray = tagsArray.filter(t => t !== 'inactive');\n\nreturn {\n  json: {\n    contactId: contact.id,\n    ...contact.properties,\n    behavior_tags: tagsArray.join(';'),\n    inbound_message: inbound.messageBody,\n    inbound_from: inbound.senderPhone,\n    inbound_at: inbound.received_at\n  }\n};"
+      },
+      "id": "w04-update-tags",
+      "name": "Update Behavior Tags",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 450]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.contactId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { behavior_tags: $json.behavior_tags, last_n8n_sync: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w04-patch-contact",
+      "name": "Patch Contact Tags",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1570, 450],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { hs_timestamp: new Date().toISOString(), hs_note_body: 'WhatsApp inbound from ' + $json.inbound_from + ': ' + $json.inbound_message }, associations: [{ to: { id: $json.contactId }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }] }) }}",
+        "options": {}
+      },
+      "id": "w04-timeline-note",
+      "name": "Log to HubSpot Timeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1790, 450],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $env.SLACK_CHANNEL_SALES || '#sales-leads', text: ':speech_balloon: *WhatsApp Reply Received*\\n\\n*From:* ' + ($json.firstname || '') + ' ' + ($json.lastname || '') + ' (' + $json.inbound_from + ')\\n*Message:* ' + $json.inbound_message + '\\n*Score:* ' + ($json.lead_score || 'N/A'), unfurl_links: false }) }}",
+        "options": {}
+      },
+      "id": "w04-slack-inbound",
+      "name": "Slack - Inbound Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2010, 450],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "slack-bot",
+          "name": "Slack Bot Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.W02_WORKFLOW_ID }}",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "w04-trigger-w02",
+      "name": "Trigger W-02 Rescore",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [2230, 450]
+    },
+    {
+      "parameters": {},
+      "id": "w04-noop-notfound",
+      "name": "Contact Not Found",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1350, 650]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send Welcome WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Welcome WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Log Outbound Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - WhatsApp Inbound": {
+      "main": [
+        [
+          {
+            "node": "Parse Inbound Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Inbound Message": {
+      "main": [
+        [
+          {
+            "node": "Is Real Message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Real Message?": {
+      "main": [
+        [
+          {
+            "node": "Find Contact by Phone",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Find Contact by Phone": {
+      "main": [
+        [
+          {
+            "node": "Contact Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contact Found?": {
+      "main": [
+        [
+          {
+            "node": "Update Behavior Tags",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Contact Not Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Behavior Tags": {
+      "main": [
+        [
+          {
+            "node": "Patch Contact Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Patch Contact Tags": {
+      "main": [
+        [
+          {
+            "node": "Log to HubSpot Timeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to HubSpot Timeline": {
+      "main": [
+        [
+          {
+            "node": "Slack - Inbound Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack - Inbound Alert": {
+      "main": [
+        [
+          {
+            "node": "Trigger W-02 Rescore",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "RevOps",
+      "id": "revops"
+    },
+    {
+      "name": "WhatsApp",
+      "id": "whatsapp"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-26T09:00:00.000Z",
+  "versionId": "1"
+}

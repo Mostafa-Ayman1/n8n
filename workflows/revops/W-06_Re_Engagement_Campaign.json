@@ -1,0 +1,409 @@
+{
+  "name": "W-06: Re-engagement Campaign",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "w06-schedule",
+      "name": "Schedule - Daily 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {},
+      "id": "w06-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filterGroups: [{ filters: [{ propertyName: 'behavior_tags', operator: 'CONTAINS_TOKEN', value: 'inactive' }, { propertyName: 're_engagement_sent', operator: 'NEQ', value: 'true' }, { propertyName: 'lastmodifieddate', operator: 'LT', value: String(Date.now() - 30 * 24 * 60 * 60 * 1000) }] }], properties: ['email', 'firstname', 'lastname', 'phone', 'behavior_tags', 'lead_score', 'lifecycle_stage', 're_engagement_sent', 'revenue_potential'], limit: 100, sorts: [{ propertyName: 'lead_score', direction: 'DESCENDING' }] }) }}",
+        "options": {}
+      },
+      "id": "w06-search-inactive",
+      "name": "Search Inactive Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $input.item.json.results || [];\nreturn results.map(contact => ({\n  json: {\n    id: contact.id,\n    ...contact.properties\n  }\n}));"
+      },
+      "id": "w06-extract",
+      "name": "Extract Contact List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "batchSize": 50,
+        "options": {}
+      },
+      "id": "w06-batch",
+      "name": "Batch 50",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL || 'https://waba.360dialog.io/v1' }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.phone, type: 'template', template: { name: 're_engagement', language: { code: 'en' }, components: [{ type: 'body', parameters: [{ type: 'text', text: $json.firstname || 'there' }] }] } }) }}",
+        "options": {}
+      },
+      "id": "w06-send-wa",
+      "name": "Send Re-engagement WA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp-api",
+          "name": "WhatsApp API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM_EMAIL || 'noreply@company.com' }}",
+        "toEmail": "={{ $json.email }}",
+        "subject": "We miss you! Here's what's new",
+        "emailType": "text",
+        "message": "={{ 'Hi ' + ($json.firstname || 'there') + ',\\n\\nIt\\'s been a while since we last connected. We\\'ve made some exciting updates and would love to catch up.\\n\\nWould you be open to a quick chat?\\n\\nBest regards' }}",
+        "options": {}
+      },
+      "id": "w06-send-email",
+      "name": "Send Re-engagement Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1350, 400],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-creds",
+          "name": "SMTP Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { re_engagement_sent: 'true', last_n8n_sync: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w06-mark-sent",
+      "name": "Set re_engagement_sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1570, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 0.5,
+        "unit": "seconds"
+      },
+      "id": "w06-rate-limit",
+      "name": "Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "amount": 7,
+        "unit": "days"
+      },
+      "id": "w06-wait-7d",
+      "name": "Wait 7 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2010, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $('Extract Contact List').item.json.id + '?properties=behavior_tags,lead_score' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "w06-recheck",
+      "name": "Recheck Contact Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2230, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "did-reply",
+              "leftValue": "={{ $json.properties.behavior_tags || '' }}",
+              "rightValue": "replied",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w06-check-replied",
+      "name": "Replied After Re-engagement?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2450, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.W02_WORKFLOW_ID }}",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "w06-rescore",
+      "name": "Trigger W-02 Rescore",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [2670, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.properties ? $('Extract Contact List').item.json.id : $json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { lifecycle_stage: 'churned', last_n8n_sync: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w06-mark-churned",
+      "name": "Mark Churned",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2670, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule - Daily 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Search Inactive Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Search Inactive Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Inactive Contacts": {
+      "main": [
+        [
+          {
+            "node": "Extract Contact List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Contact List": {
+      "main": [
+        [
+          {
+            "node": "Batch 50",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch 50": {
+      "main": [
+        [
+          {
+            "node": "Send Re-engagement WA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Re-engagement WA": {
+      "main": [
+        [
+          {
+            "node": "Send Re-engagement Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Re-engagement Email": {
+      "main": [
+        [
+          {
+            "node": "Set re_engagement_sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set re_engagement_sent": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Delay": {
+      "main": [
+        [
+          {
+            "node": "Wait 7 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 7 Days": {
+      "main": [
+        [
+          {
+            "node": "Recheck Contact Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recheck Contact Status": {
+      "main": [
+        [
+          {
+            "node": "Replied After Re-engagement?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replied After Re-engagement?": {
+      "main": [
+        [
+          {
+            "node": "Trigger W-02 Rescore",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Churned",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "RevOps",
+      "id": "revops"
+    },
+    {
+      "name": "Re-engagement",
+      "id": "re-engagement"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-26T09:00:00.000Z",
+  "versionId": "1"
+}

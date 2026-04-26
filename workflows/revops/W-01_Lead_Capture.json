@@ -1,0 +1,314 @@
+{
+  "name": "W-01: Lead Capture",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-capture",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "w01-webhook",
+      "name": "Webhook - Lead Capture",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "lead-capture"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\n\n// Validate required fields\nconst required = ['email', 'firstname', 'lastname'];\nfor (const field of required) {\n  if (!body[field] || String(body[field]).trim() === '') {\n    throw new Error(`Missing required field: ${field}`);\n  }\n}\n\n// Validate email format\nconst emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nif (!emailRegex.test(body.email)) {\n  throw new Error('Invalid email format');\n}\n\n// Normalize phone: strip non-digit except leading +\nlet phone = (body.phone || '').replace(/[^\\d+]/g, '');\nif (phone && !phone.startsWith('+')) {\n  phone = '+' + phone;\n}\n\nreturn {\n  json: {\n    email: body.email.toLowerCase().trim(),\n    firstname: body.firstname.trim(),\n    lastname: body.lastname.trim(),\n    phone: phone,\n    lead_source: body.lead_source || 'manual',\n    revenue_potential: parseFloat(body.revenue_potential) || 0,\n    jobtitle: (body.jobtitle || '').trim(),\n    city: (body.city || '').trim(),\n    lifecycle_stage: 'lead',\n    last_n8n_sync: new Date().toISOString()\n  }\n};"
+      },
+      "id": "w01-validate",
+      "name": "Validate & Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filterGroups: [{ filters: [{ propertyName: 'email', operator: 'EQ', value: $json.email }] }], properties: ['email', 'firstname', 'lastname', 'lead_score', 'lifecycle_stage'], limit: 1 }) }}",
+        "options": {}
+      },
+      "id": "w01-search-hubspot",
+      "name": "Search HubSpot Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [690, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "contact-exists",
+              "leftValue": "={{ $json.total }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w01-if-exists",
+      "name": "Contact Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $('Search HubSpot Contact').item.json.results[0].id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { firstname: $('Validate & Normalize Input').item.json.firstname, lastname: $('Validate & Normalize Input').item.json.lastname, phone: $('Validate & Normalize Input').item.json.phone, lead_source: $('Validate & Normalize Input').item.json.lead_source, revenue_potential: String($('Validate & Normalize Input').item.json.revenue_potential), jobtitle: $('Validate & Normalize Input').item.json.jobtitle, city: $('Validate & Normalize Input').item.json.city, last_n8n_sync: $('Validate & Normalize Input').item.json.last_n8n_sync } }) }}",
+        "options": {}
+      },
+      "id": "w01-update-contact",
+      "name": "Update Existing Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { email: $('Validate & Normalize Input').item.json.email, firstname: $('Validate & Normalize Input').item.json.firstname, lastname: $('Validate & Normalize Input').item.json.lastname, phone: $('Validate & Normalize Input').item.json.phone, lead_source: $('Validate & Normalize Input').item.json.lead_source, revenue_potential: String($('Validate & Normalize Input').item.json.revenue_potential), jobtitle: $('Validate & Normalize Input').item.json.jobtitle, city: $('Validate & Normalize Input').item.json.city, lifecycle_stage: 'lead', last_n8n_sync: $('Validate & Normalize Input').item.json.last_n8n_sync } }) }}",
+        "options": {}
+      },
+      "id": "w01-create-contact",
+      "name": "Create New Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const upstream = $input.item.json;\nconst contactId = upstream.id;\nconst contactData = $('Validate & Normalize Input').item.json;\n\nreturn {\n  json: {\n    contactId: contactId,\n    ...contactData\n  }\n};"
+      },
+      "id": "w01-merge-update",
+      "name": "Merge Contact ID (Update)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const upstream = $input.item.json;\nconst contactId = upstream.id;\nconst contactData = $('Validate & Normalize Input').item.json;\n\nreturn {\n  json: {\n    contactId: contactId,\n    ...contactData\n  }\n};"
+      },
+      "id": "w01-merge-create",
+      "name": "Merge Contact ID (Create)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.W02_WORKFLOW_ID }}",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "w01-trigger-w02",
+      "name": "Trigger W-02 Lead Scoring",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1570, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, contactId: $json.contactId }) }}",
+        "options": {}
+      },
+      "id": "w01-respond",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1790, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.message || 'Validation failed' }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "w01-respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [470, 500]
+    }
+  ],
+  "connections": {
+    "Webhook - Lead Capture": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Search HubSpot Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search HubSpot Contact": {
+      "main": [
+        [
+          {
+            "node": "Contact Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contact Exists?": {
+      "main": [
+        [
+          {
+            "node": "Update Existing Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create New Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Existing Contact": {
+      "main": [
+        [
+          {
+            "node": "Merge Contact ID (Update)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create New Contact": {
+      "main": [
+        [
+          {
+            "node": "Merge Contact ID (Create)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Contact ID (Update)": {
+      "main": [
+        [
+          {
+            "node": "Trigger W-02 Lead Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Contact ID (Create)": {
+      "main": [
+        [
+          {
+            "node": "Trigger W-02 Lead Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger W-02 Lead Scoring": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "RevOps",
+      "id": "revops"
+    },
+    {
+      "name": "Lead Management",
+      "id": "lead-mgmt"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-26T09:00:00.000Z",
+  "versionId": "1"
+}

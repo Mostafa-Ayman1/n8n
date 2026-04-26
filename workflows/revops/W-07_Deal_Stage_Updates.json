@@ -1,0 +1,450 @@
+{
+  "name": "W-07: Deal Stage Updates",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hubspot-deal-change",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "w07-webhook",
+      "name": "Webhook - Deal Change",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 400],
+      "webhookId": "hubspot-deal-change"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body || $input.item.json;\nconst deal = body.properties || body;\n\nconst dealId = body.objectId || body.id || deal.hs_object_id;\nconst dealName = deal.dealname || 'Unknown Deal';\nconst stage = deal.dealstage || '';\nconst amount = parseFloat(deal.amount) || 0;\nconst contactId = deal.associations?.contacts?.[0] || '';\nconst ownerId = deal.hubspot_owner_id || '';\nconst closeDate = deal.closedate || '';\nconst pipeline = deal.pipeline || 'default';\n\nreturn {\n  json: {\n    dealId,\n    dealName,\n    stage,\n    amount,\n    contactId,\n    ownerId,\n    closeDate,\n    pipeline,\n    updated_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "w07-parse-deal",
+      "name": "Parse Deal Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 400]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_AUDIT_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Deal Audit Trail",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "w07-log-sheets",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [690, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.stage }}",
+                    "rightValue": "closedwon",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": "Closed Won"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.stage }}",
+                    "rightValue": "closedlost",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": "Closed Lost"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.stage }}",
+                    "rightValue": "proposalsent",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": "Proposal Sent"
+            }
+          ],
+          "fallbackOutput": "other"
+        },
+        "options": {}
+      },
+      "id": "w07-switch",
+      "name": "Switch by Stage",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.contactId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { lifecycle_stage: 'customer', last_n8n_sync: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w07-won-update",
+      "name": "Set Stage Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $env.SLACK_CHANNEL_WINS || '#wins', text: ':tada: *Deal Won!*\\n\\n*Deal:* ' + $json.dealName + '\\n*Amount:* $' + $json.amount + '\\n*Close Date:* ' + $json.closeDate, unfurl_links: false }) }}",
+        "options": {}
+      },
+      "id": "w07-slack-won",
+      "name": "Slack - Deal Won",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "slack-bot",
+          "name": "Slack Bot Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.W12_WORKFLOW_ID }}",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "w07-trigger-w12",
+      "name": "Trigger W-12",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1570, 200]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.contactId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { lifecycle_stage: 'churned', last_n8n_sync: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w07-lost-update",
+      "name": "Set Stage Churned",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "days"
+      },
+      "id": "w07-wait-30d",
+      "name": "Wait 30 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1350, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.W09_WORKFLOW_ID }}",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "w07-trigger-w09",
+      "name": "Trigger W-09",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/tasks",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { hs_task_subject: 'Proposal Follow-up: ' + $json.dealName, hs_task_body: 'Proposal was sent for deal: ' + $json.dealName + '. Amount: $' + $json.amount + '. Follow up within 48 hours.', hs_task_status: 'NOT_STARTED', hs_task_priority: 'HIGH', hubspot_owner_id: $json.ownerId, hs_timestamp: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w07-proposal-task",
+      "name": "Create Follow-up Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 600],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Recalculate 90-day forecast based on pipeline\n// This logs to Google Sheets for Looker Studio consumption\nconst deal = $input.item.json;\nconst now = new Date();\nconst ninetyDaysOut = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);\n\nreturn {\n  json: {\n    forecast_date: now.toISOString().split('T')[0],\n    deal_id: deal.dealId,\n    deal_name: deal.dealName,\n    stage: deal.stage,\n    amount: deal.amount,\n    forecast_window_end: ninetyDaysOut.toISOString().split('T')[0],\n    pipeline: deal.pipeline\n  }\n};"
+      },
+      "id": "w07-forecast",
+      "name": "Recalculate 90-Day Forecast",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 800]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_FORECAST_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Forecast",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "w07-log-forecast",
+      "name": "Log Forecast to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1350, 800],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Deal Change": {
+      "main": [
+        [
+          {
+            "node": "Parse Deal Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Deal Data": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Switch by Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch by Stage": {
+      "main": [
+        [
+          {
+            "node": "Set Stage Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Stage Churned",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Follow-up Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Recalculate 90-Day Forecast",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Stage Customer": {
+      "main": [
+        [
+          {
+            "node": "Slack - Deal Won",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack - Deal Won": {
+      "main": [
+        [
+          {
+            "node": "Trigger W-12",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Stage Churned": {
+      "main": [
+        [
+          {
+            "node": "Wait 30 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 30 Days": {
+      "main": [
+        [
+          {
+            "node": "Trigger W-09",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recalculate 90-Day Forecast": {
+      "main": [
+        [
+          {
+            "node": "Log Forecast to Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "RevOps",
+      "id": "revops"
+    },
+    {
+      "name": "Deal Management",
+      "id": "deal-mgmt"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-26T09:00:00.000Z",
+  "versionId": "1"
+}
