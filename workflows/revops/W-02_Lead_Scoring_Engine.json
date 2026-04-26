@@ -1,0 +1,296 @@
+{
+  "name": "W-02: Lead Scoring Engine",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "w02-trigger-manual",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "w02-schedule",
+      "name": "Schedule - Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filterGroups: [{ filters: [{ propertyName: 'lifecycle_stage', operator: 'IN', values: ['lead', 'mql', 'sql'] }] }], properties: ['email', 'firstname', 'lastname', 'jobtitle', 'city', 'revenue_potential', 'behavior_tags', 'lead_score', 'lifecycle_stage', 'vip_flag'], limit: 100 }) }}",
+        "options": {}
+      },
+      "id": "w02-fetch-contacts",
+      "name": "Fetch Contacts for Scoring",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// If triggered by W-01, use that contact data directly\n// If triggered by schedule, use fetched contacts\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  // Handle both direct contact and search results\n  if (item.json.results) {\n    for (const contact of item.json.results) {\n      results.push({ json: { ...contact.properties, id: contact.id } });\n    }\n  } else {\n    results.push(item);\n  }\n}\n\nreturn results;"
+      },
+      "id": "w02-normalize",
+      "name": "Normalize Contact Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "w02-batch",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [910, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const contact = $input.item.json;\nlet score = 0;\n\n// Demographic (max 40 points)\nconst jobTitleMap = { 'ceo': 15, 'founder': 15, 'owner': 15, 'director': 10, 'manager': 8, 'vp': 12, 'executive': 10, 'head of': 10 };\nconst jobTitle = (contact.jobtitle || '').toLowerCase();\nfor (const [key, pts] of Object.entries(jobTitleMap)) {\n  if (jobTitle.includes(key)) { score += pts; break; }\n}\n\nconst targetCities = ['cairo', 'dubai', 'riyadh', 'london', 'new york'];\nconst city = (contact.city || '').toLowerCase();\nif (targetCities.some(c => city.includes(c))) score += 15;\n\nconst rev = parseFloat(contact.revenue_potential) || 0;\nif (rev >= 10000) score += 10;\nelse if (rev >= 5000) score += 7;\nelse if (rev >= 1000) score += 3;\n\n// Behavioral (max 60 points)\nlet tags = contact.behavior_tags || [];\nif (typeof tags === 'string') {\n  tags = tags.split(';').map(t => t.trim()).filter(Boolean);\n}\nif (tags.includes('replied')) score += 25;\nif (tags.includes('clicked')) score += 15;\nif (tags.includes('opened')) score += 10;\nif (tags.includes('inactive')) score -= 20;\n\nscore = Math.min(100, Math.max(0, score));\n\nlet newLifecycleStage = contact.lifecycle_stage || 'lead';\nif (score >= 81) newLifecycleStage = 'sql';\nelse if (score >= 31) newLifecycleStage = 'mql';\n\nreturn {\n  json: {\n    ...contact,\n    lead_score: score,\n    lifecycle_stage: newLifecycleStage,\n    score_tier: score >= 81 ? 'vip' : score >= 61 ? 'hot' : score >= 31 ? 'warm' : 'cold'\n  }\n};"
+      },
+      "id": "w02-score",
+      "name": "Calculate Lead Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 400]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { lead_score: String($json.lead_score), lifecycle_stage: $json.lifecycle_stage, last_n8n_sync: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w02-update-hubspot",
+      "name": "Update HubSpot Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 0.5,
+        "unit": "seconds"
+      },
+      "id": "w02-rate-limit",
+      "name": "Rate Limit Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1570, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-vip",
+              "leftValue": "={{ $('Calculate Lead Score').item.json.lead_score }}",
+              "rightValue": 81,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w02-check-vip",
+      "name": "Score >= 81 (VIP)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1790, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": "={{ $env.W08_WORKFLOW_ID }}",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "w02-trigger-w08",
+      "name": "Trigger W-08 VIP Upgrade",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [2010, 300]
+    },
+    {
+      "parameters": {},
+      "id": "w02-noop",
+      "name": "No VIP Action",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2010, 500]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Contact Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule - Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Contacts for Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Contacts for Scoring": {
+      "main": [
+        [
+          {
+            "node": "Normalize Contact Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Contact Data": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Calculate Lead Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Lead Score": {
+      "main": [
+        [
+          {
+            "node": "Update HubSpot Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update HubSpot Score": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Delay": {
+      "main": [
+        [
+          {
+            "node": "Score >= 81 (VIP)?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score >= 81 (VIP)?": {
+      "main": [
+        [
+          {
+            "node": "Trigger W-08 VIP Upgrade",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No VIP Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "RevOps",
+      "id": "revops"
+    },
+    {
+      "name": "Lead Scoring",
+      "id": "lead-scoring"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-26T09:00:00.000Z",
+  "versionId": "1"
+}

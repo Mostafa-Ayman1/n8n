@@ -1,0 +1,247 @@
+{
+  "name": "W-08: VIP Upgrade Trigger",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "w08-trigger",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const contact = $input.item.json;\nconst score = parseInt(contact.lead_score) || 0;\nconst rev = parseFloat(contact.revenue_potential) || 0;\nconst vipThreshold = parseFloat($env.VIP_THRESHOLD) || 10000;\n\nconst isVip = score >= 81 || rev >= vipThreshold;\n\nreturn {\n  json: {\n    ...contact,\n    isVip,\n    vip_reason: score >= 81 ? 'high_score' : 'high_revenue',\n    lead_score: score,\n    revenue_potential: rev\n  }\n};"
+      },
+      "id": "w08-check-vip",
+      "name": "Check VIP Eligibility",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-vip",
+              "leftValue": "={{ $json.isVip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w08-if-vip",
+      "name": "Is VIP?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://api.hubapi.com/crm/v3/objects/contacts/' + $json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { vip_flag: 'true', lifecycle_stage: 'vip', hubspot_owner_id: $env.HUBSPOT_OWNER_SENIOR_REP || '', last_n8n_sync: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w08-update-vip",
+      "name": "Set VIP Flag & Reassign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [910, 250],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WHATSAPP_API_URL || 'https://waba.360dialog.io/v1' }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.phone, type: 'template', template: { name: 'vip_welcome', language: { code: 'en' }, components: [{ type: 'body', parameters: [{ type: 'text', text: $json.firstname || 'there' }] }] } }) }}",
+        "options": {}
+      },
+      "id": "w08-send-vip-wa",
+      "name": "Send VIP Welcome WA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1130, 250],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp-api",
+          "name": "WhatsApp API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $env.SLACK_CHANNEL_MANAGEMENT || '#management', text: ':star2: *VIP Lead Upgraded*\\n\\n*Name:* ' + ($json.firstname || '') + ' ' + ($json.lastname || '') + '\\n*Score:* ' + $json.lead_score + '\\n*Revenue Potential:* $' + $json.revenue_potential + '\\n*VIP Reason:* ' + $json.vip_reason + '\\n*Assigned To:* Senior Rep\\n\\n:clock1: 30-min SLA task created.', unfurl_links: false }) }}",
+        "options": {}
+      },
+      "id": "w08-slack-mgmt",
+      "name": "Slack Management Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1350, 250],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "slack-bot",
+          "name": "Slack Bot Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/tasks",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { hs_task_subject: '[VIP - 30min SLA] Contact: ' + ($json.firstname || '') + ' ' + ($json.lastname || ''), hs_task_body: 'VIP Lead requires immediate attention.\\nScore: ' + $json.lead_score + '\\nRevenue: $' + $json.revenue_potential + '\\nReason: ' + $json.vip_reason + '\\n\\nSLA: Respond within 30 minutes.', hs_task_status: 'NOT_STARTED', hs_task_priority: 'HIGH', hubspot_owner_id: $env.HUBSPOT_OWNER_SENIOR_REP || '', hs_timestamp: new Date().toISOString() } }) }}",
+        "options": {}
+      },
+      "id": "w08-sla-task",
+      "name": "Create 30-min SLA Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1570, 250],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hubspot-api",
+          "name": "HubSpot API Key"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "w08-noop",
+      "name": "Not VIP - Skip",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [910, 450]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check VIP Eligibility",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check VIP Eligibility": {
+      "main": [
+        [
+          {
+            "node": "Is VIP?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is VIP?": {
+      "main": [
+        [
+          {
+            "node": "Set VIP Flag & Reassign",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not VIP - Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set VIP Flag & Reassign": {
+      "main": [
+        [
+          {
+            "node": "Send VIP Welcome WA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send VIP Welcome WA": {
+      "main": [
+        [
+          {
+            "node": "Slack Management Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Management Alert": {
+      "main": [
+        [
+          {
+            "node": "Create 30-min SLA Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "RevOps",
+      "id": "revops"
+    },
+    {
+      "name": "VIP",
+      "id": "vip"
+    }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2026-04-26T09:00:00.000Z",
+  "versionId": "1"
+}
